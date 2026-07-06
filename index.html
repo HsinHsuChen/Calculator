@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工期週次計算器</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", sans-serif;
+    background: #F4F3EF;
+    color: #2C2C2A;
+    margin: 0;
+    padding: 2rem 1rem;
+    line-height: 1.6;
+  }
+  .card {
+    max-width: 680px;
+    margin: 0 auto;
+    background: #FFFFFF;
+    border: 1px solid #E4E2DA;
+    border-radius: 12px;
+    padding: 1.75rem 1.75rem 2rem;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 0.25rem;
+  }
+  .subtitle {
+    font-size: 13px;
+    color: #6F6E68;
+    margin: 0 0 1.5rem;
+  }
+  .section-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #444441;
+    margin: 0 0 0.6rem;
+  }
+  .block-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: #2C2C2A;
+    margin: 0 0 0.6rem;
+  }
+  .row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 0.75rem;
+  }
+  .field label {
+    font-size: 12px;
+    color: #6F6E68;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .field input[type="date"] {
+    width: 100%;
+    height: 38px;
+    border: 1px solid #D8D6CD;
+    border-radius: 8px;
+    padding: 0 10px;
+    font-size: 14px;
+    background: #FAFAF8;
+    color: #2C2C2A;
+  }
+  .field input[type="date"]:focus {
+    outline: none;
+    border-color: #0F6E56;
+    box-shadow: 0 0 0 2px rgba(15,110,86,0.15);
+  }
+  hr {
+    border: none;
+    border-top: 1px solid #EDEBE3;
+    margin: 1.25rem 0;
+  }
+  .error-box {
+    display: none;
+    font-size: 12px;
+    color: #791F1F;
+    background: #FCEBEB;
+    border-radius: 8px;
+    padding: 0.5rem 0.7rem;
+    margin-bottom: 0.6rem;
+  }
+  .metrics {
+    display: none;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+  .metric {
+    background: #F1EFE8;
+    border-radius: 8px;
+    padding: 0.7rem 0.8rem;
+  }
+  .metric .label {
+    font-size: 11px;
+    color: #6F6E68;
+    margin: 0 0 2px;
+  }
+  .metric .value {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 0;
+    color: #085041;
+  }
+  .query-block {
+    margin-bottom: 1.5rem;
+  }
+  .query-block:last-child {
+    margin-bottom: 0;
+  }
+  @media (max-width: 480px) {
+    .row, .metrics { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>工期週次計算器</h1>
+  <p class="subtitle">輸入整體工期區間，可同時查詢四組區間，自動算出各自第幾週、第幾雙週</p>
+
+  <p class="section-label">整體工期</p>
+  <div class="row">
+    <div class="field">
+      <label for="periodStart">工期開始日</label>
+      <input type="date" id="periodStart">
+    </div>
+    <div class="field">
+      <label for="periodEnd">工期結束日</label>
+      <input type="date" id="periodEnd">
+    </div>
+  </div>
+
+  <hr>
+
+  <div id="queryBlocks"></div>
+</div>
+
+<script>
+const periodStart = document.getElementById('periodStart');
+const periodEnd = document.getElementById('periodEnd');
+const queryBlocks = document.getElementById('queryBlocks');
+
+const today = new Date();
+const iso = d => d.toISOString().slice(0,10);
+const t0 = new Date(today.getFullYear(), today.getMonth(), 1);
+periodStart.value = iso(t0);
+const t1 = new Date(today.getFullYear(), today.getMonth()+2, 0);
+periodEnd.value = iso(t1);
+
+function parseDate(str) {
+  const [y,m,d] = str.split('-').map(Number);
+  return new Date(y, m-1, d);
+}
+function dayDiff(a, b) {
+  return Math.round((b - a) / 86400000);
+}
+function weekOf(offsetDays) { return Math.floor(offsetDays / 7) + 1; }
+function biweekOf(offsetDays) { return Math.floor(offsetDays / 14) + 1; }
+
+const blockCount = 4;
+for (let i = 0; i < blockCount; i++) {
+  const wrap = document.createElement('div');
+  wrap.className = 'query-block';
+
+  const defaultStart = new Date(today);
+  defaultStart.setDate(today.getDate() + i * 7);
+  const defaultEnd = new Date(defaultStart);
+  defaultEnd.setDate(defaultStart.getDate() + 6);
+
+  wrap.innerHTML = `
+    <p class="block-label">查詢區間 ${i + 1}</p>
+    <div class="row">
+      <div class="field">
+        <label>起始日</label>
+        <input type="date" class="qStart">
+      </div>
+      <div class="field">
+        <label>結束日</label>
+        <input type="date" class="qEnd">
+      </div>
+    </div>
+    <div class="error-box"></div>
+    <div class="metrics">
+      <div class="metric">
+        <p class="label">第幾週</p>
+        <p class="value weekOut">–</p>
+      </div>
+      <div class="metric">
+        <p class="label">第幾雙週</p>
+        <p class="value biweekOut">–</p>
+      </div>
+      <div class="metric">
+        <p class="label">距工期開始</p>
+        <p class="value dayOut">–</p>
+      </div>
+    </div>
+  `;
+  queryBlocks.appendChild(wrap);
+  wrap.querySelector('.qStart').value = iso(defaultStart);
+  wrap.querySelector('.qEnd').value = iso(defaultEnd);
+}
+
+function calcAll() {
+  const ps = periodStart.value, pe = periodEnd.value;
+  const dPS = parseDate(ps), dPE = parseDate(pe);
+  const periodValid = ps && pe && dPE >= dPS;
+
+  document.querySelectorAll('.query-block').forEach((wrap) => {
+    const qs = wrap.querySelector('.qStart').value;
+    const qe = wrap.querySelector('.qEnd').value;
+    const errorBox = wrap.querySelector('.error-box');
+    const metrics = wrap.querySelector('.metrics');
+    errorBox.style.display = 'none';
+    metrics.style.display = 'none';
+
+    if (!periodValid) {
+      errorBox.textContent = '請先確認整體工期開始日與結束日正確。';
+      errorBox.style.display = 'block';
+      return;
+    }
+    if (!qs || !qe) return;
+
+    const dQS = parseDate(qs), dQE = parseDate(qe);
+    if (dQE < dQS) {
+      errorBox.textContent = '結束日不可早於起始日。';
+      errorBox.style.display = 'block';
+      return;
+    }
+    if (dQS < dPS || dQE > dPE) {
+      errorBox.textContent = '此區間超出整體工期範圍。';
+      errorBox.style.display = 'block';
+      return;
+    }
+
+    const offsetStart = dayDiff(dPS, dQS);
+    const offsetEnd = dayDiff(dPS, dQE);
+    const wStart = weekOf(offsetStart), wEnd = weekOf(offsetEnd);
+    const bStart = biweekOf(offsetStart), bEnd = biweekOf(offsetEnd);
+
+    wrap.querySelector('.weekOut').textContent = wStart === wEnd ? `第 ${wStart} 週` : `第 ${wStart}–${wEnd} 週`;
+    wrap.querySelector('.biweekOut').textContent = bStart === bEnd ? `第 ${bStart} 雙週` : `第 ${bStart}–${bEnd} 雙週`;
+    wrap.querySelector('.dayOut').textContent = offsetStart === offsetEnd ? `第 ${offsetStart+1} 天` : `第 ${offsetStart+1}–${offsetEnd+1} 天`;
+
+    metrics.style.display = 'grid';
+  });
+}
+
+periodStart.addEventListener('input', calcAll);
+periodEnd.addEventListener('input', calcAll);
+queryBlocks.addEventListener('input', calcAll);
+calcAll();
+</script>
+
+</body>
+</html>
