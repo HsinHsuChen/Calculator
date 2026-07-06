@@ -15,7 +15,7 @@
     line-height: 1.6;
   }
   .card {
-    max-width: 680px;
+    max-width: 720px;
     margin: 0 auto;
     background: #FFFFFF;
     border: 1px solid #E4E2DA;
@@ -86,7 +86,7 @@
   .info-box .label {
     font-size: 13px;
     color: #6F6E68;
-    margin: 0 0 4px;
+    margin: 0 0 8px;
   }
   .info-box .value {
     font-size: 22px;
@@ -94,17 +94,21 @@
     margin: 0;
     color: #085041;
   }
-  .day-lookup-row {
+  .lookup-row {
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-top: 4px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
   }
-  .day-lookup-row span {
+  .lookup-row:last-of-type {
+    margin-bottom: 0;
+  }
+  .lookup-row span {
     font-size: 14px;
     color: #6F6E68;
   }
-  .day-lookup-row input[type="number"] {
+  .lookup-row input[type="number"] {
     width: 90px;
     height: 36px;
     border: 1px solid #D8D6CD;
@@ -114,10 +118,15 @@
     background: #FAFAF8;
     color: #2C2C2A;
   }
-  .day-lookup-row .result {
-    font-size: 20px;
-    font-weight: 600;
-    color: #085041;
+  .lookup-row input[type="date"] {
+    width: 170px;
+    height: 36px;
+    border: 1px solid #D8D6CD;
+    border-radius: 8px;
+    padding: 0 10px;
+    font-size: 14px;
+    background: #FAFAF8;
+    color: #2C2C2A;
   }
   .field-error {
     display: none;
@@ -136,7 +145,7 @@
   }
   .metrics {
     display: none;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 10px;
   }
   .metric {
@@ -150,7 +159,7 @@
     margin: 0 0 2px;
   }
   .metric .value {
-    font-size: 17px;
+    font-size: 16px;
     font-weight: 600;
     margin: 0;
     color: #085041;
@@ -161,8 +170,9 @@
   .query-block:last-child {
     margin-bottom: 0;
   }
-  @media (max-width: 480px) {
-    .row, .metrics { grid-template-columns: 1fr 1fr; }
+  @media (max-width: 560px) {
+    .row { grid-template-columns: 1fr 1fr; }
+    .metrics { grid-template-columns: 1fr 1fr; }
   }
 </style>
 </head>
@@ -170,7 +180,7 @@
 
 <div class="card">
   <h1>工期週次計算器</h1>
-  <p class="subtitle">輸入整體工期區間，可推算天數對應日期，並同時查詢四組區間的週次與雙週次</p>
+  <p class="subtitle">輸入整體工期區間，可雙向推算天數與日期，並同時查詢四組區間的週次、雙週次與總天數</p>
 
   <p class="section-label">整體工期</p>
   <div class="row">
@@ -190,15 +200,17 @@
   </div>
 
   <div class="info-box">
-    <p class="label">推算第幾天對應日期（工期開始日為第 1 天）</p>
-    <div class="day-lookup-row">
+    <p class="label">天數與日期雙向推算（工期開始日為第 1 天）</p>
+    <div class="lookup-row">
       <span>第</span>
       <input type="number" id="dayNumber" min="1" value="65">
       <span>天</span>
-      <span>→</span>
-      <span class="result" id="dayDateOut">–</span>
     </div>
-    <p class="field-error" id="dayNumberError"></p>
+    <div class="lookup-row">
+      <span>對應日期</span>
+      <input type="date" id="dayDate">
+    </div>
+    <p class="field-error" id="lookupError"></p>
   </div>
 
   <hr>
@@ -211,8 +223,8 @@ const periodStart = document.getElementById('periodStart');
 const periodEnd = document.getElementById('periodEnd');
 const totalDaysOut = document.getElementById('totalDaysOut');
 const dayNumber = document.getElementById('dayNumber');
-const dayDateOut = document.getElementById('dayDateOut');
-const dayNumberError = document.getElementById('dayNumberError');
+const dayDate = document.getElementById('dayDate');
+const lookupError = document.getElementById('lookupError');
 const queryBlocks = document.getElementById('queryBlocks');
 
 const today = new Date();
@@ -231,9 +243,6 @@ function dayDiff(a, b) {
 }
 function weekOf(offsetDays) { return Math.floor(offsetDays / 7) + 1; }
 function biweekOf(offsetDays) { return Math.floor(offsetDays / 14) + 1; }
-function fmtDate(d) {
-  return `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')}`;
-}
 
 const blockCount = 4;
 for (let i = 0; i < blockCount; i++) {
@@ -271,11 +280,48 @@ for (let i = 0; i < blockCount; i++) {
         <p class="label">距工期開始</p>
         <p class="value dayOut">–</p>
       </div>
+      <div class="metric">
+        <p class="label">共幾天</p>
+        <p class="value spanOut">–</p>
+      </div>
     </div>
   `;
   queryBlocks.appendChild(wrap);
   wrap.querySelector('.qStart').value = iso(defaultStart);
   wrap.querySelector('.qEnd').value = iso(defaultEnd);
+}
+
+let lookupSource = null;
+
+function syncLookup(source) {
+  const ps = periodStart.value, pe = periodEnd.value;
+  const dPS = parseDate(ps), dPE = parseDate(pe);
+  const periodValid = ps && pe && dPE >= dPS;
+  lookupError.style.display = 'none';
+
+  if (!periodValid) return;
+
+  if (source === 'day') {
+    const n = parseInt(dayNumber.value, 10);
+    if (!n || n < 1) {
+      lookupError.textContent = '請輸入大於 0 的天數。';
+      lookupError.style.display = 'block';
+      return;
+    }
+    const targetDate = new Date(dPS);
+    targetDate.setDate(dPS.getDate() + (n - 1));
+    dayDate.value = iso(targetDate);
+  } else if (source === 'date') {
+    if (!dayDate.value) return;
+    const dTarget = parseDate(dayDate.value);
+    if (dTarget < dPS) {
+      lookupError.textContent = '日期不可早於工期開始日。';
+      lookupError.style.display = 'block';
+      return;
+    }
+    const offset = dayDiff(dPS, dTarget);
+    dayNumber.value = offset + 1;
+  }
 }
 
 function calcAll() {
@@ -290,21 +336,7 @@ function calcAll() {
     totalDaysOut.textContent = '–';
   }
 
-  dayNumberError.style.display = 'none';
-  if (periodValid && dayNumber.value) {
-    const n = parseInt(dayNumber.value, 10);
-    if (!n || n < 1) {
-      dayNumberError.textContent = '請輸入大於 0 的天數。';
-      dayNumberError.style.display = 'block';
-      dayDateOut.textContent = '–';
-    } else {
-      const targetDate = new Date(dPS);
-      targetDate.setDate(dPS.getDate() + (n - 1));
-      dayDateOut.textContent = fmtDate(targetDate);
-    }
-  } else {
-    dayDateOut.textContent = '–';
-  }
+  syncLookup(lookupSource || 'day');
 
   document.querySelectorAll('.query-block').forEach((wrap) => {
     const qs = wrap.querySelector('.qStart').value;
@@ -337,18 +369,21 @@ function calcAll() {
     const offsetEnd = dayDiff(dPS, dQE);
     const wStart = weekOf(offsetStart), wEnd = weekOf(offsetEnd);
     const bStart = biweekOf(offsetStart), bEnd = biweekOf(offsetEnd);
+    const spanDays = offsetEnd - offsetStart + 1;
 
     wrap.querySelector('.weekOut').textContent = wStart === wEnd ? `第 ${wStart} 週` : `第 ${wStart}–${wEnd} 週`;
     wrap.querySelector('.biweekOut').textContent = bStart === bEnd ? `第 ${bStart} 雙週` : `第 ${bStart}–${bEnd} 雙週`;
     wrap.querySelector('.dayOut').textContent = offsetStart === offsetEnd ? `第 ${offsetStart+1} 天` : `第 ${offsetStart+1}–${offsetEnd+1} 天`;
+    wrap.querySelector('.spanOut').textContent = `${spanDays} 天`;
 
     metrics.style.display = 'grid';
   });
 }
 
-periodStart.addEventListener('input', calcAll);
-periodEnd.addEventListener('input', calcAll);
-dayNumber.addEventListener('input', calcAll);
+periodStart.addEventListener('input', () => { calcAll(); });
+periodEnd.addEventListener('input', () => { calcAll(); });
+dayNumber.addEventListener('input', () => { lookupSource = 'day'; calcAll(); });
+dayDate.addEventListener('input', () => { lookupSource = 'date'; calcAll(); });
 queryBlocks.addEventListener('input', calcAll);
 calcAll();
 </script>
