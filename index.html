@@ -50,14 +50,17 @@
     gap: 12px;
     margin-bottom: 0.75rem;
   }
+  .period-row, .lookup-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .field { min-width: 0; }
   .field label {
     font-size: 12px;
     color: #6F6E68;
     display: block;
     margin-bottom: 4px;
   }
-  .field input[type="date"] {
+  .field input[type="date"], .field input[type="number"] {
     width: 100%;
+    min-width: 0;
     height: 38px;
     border: 1px solid #D8D6CD;
     border-radius: 8px;
@@ -66,8 +69,7 @@
     background: #FAFAF8;
     color: #2C2C2A;
   }
-  .field input[type="date"]:focus,
-  input[type="number"]:focus {
+  input:focus {
     outline: none;
     border-color: #0F6E56;
     box-shadow: 0 0 0 2px rgba(15,110,86,0.15);
@@ -170,8 +172,11 @@
   .query-block:last-child {
     margin-bottom: 0;
   }
+  .hint { font-size: 12px; color: #6F6E68; margin: 0 0 0.75rem; }
+  .week-range { margin: 0.65rem 0 0; color: #085041; }
   @media (max-width: 560px) {
     .row { grid-template-columns: 1fr 1fr; }
+    .period-row .field:last-child, .lookup-grid .field:last-child { grid-column: 1 / -1; }
     .metrics { grid-template-columns: 1fr 1fr; }
   }
 </style>
@@ -180,37 +185,50 @@
 
 <div class="card">
   <h1>工期週次計算器</h1>
-  <p class="subtitle">輸入整體工期區間，可雙向推算天數與日期，並同時查詢四組區間的週次、雙週次與總天數</p>
+  <p class="subtitle">輸入開工日與工期，自動計算竣工日；天數、週數與日期皆可雙向換算。</p>
 
   <p class="section-label">整體工期</p>
-  <div class="row">
+  <div class="row period-row">
     <div class="field">
-      <label for="periodStart">工期開始日</label>
-      <input type="date" id="periodStart">
+      <label for="periodStart">開工日</label>
+      <input type="date" id="periodStart" min="0001-01-01" max="9999-12-31">
     </div>
     <div class="field">
-      <label for="periodEnd">工期結束日</label>
-      <input type="date" id="periodEnd">
+      <label for="periodDays">工期（日曆天）</label>
+      <input type="number" id="periodDays" min="1" step="1" inputmode="numeric">
+    </div>
+    <div class="field">
+      <label for="periodEnd">竣工日（自動帶入，也可修改）</label>
+      <input type="date" id="periodEnd" min="0001-01-01" max="9999-12-31">
     </div>
   </div>
+  <p class="hint">開工日算第 1 天；竣工日＝開工日＋工期－1 天。修改竣工日也會回算工期。</p>
+  <p class="error-box" id="periodError" role="status"></p>
 
   <div class="info-box">
     <p class="label">工期總日曆天數（工期開始日為第 1 天）</p>
-    <p class="value" id="totalDaysOut">–</p>
+    <p class="value" id="totalDaysOut" aria-live="polite">–</p>
   </div>
 
   <div class="info-box">
-    <p class="label">天數與日期雙向推算（工期開始日為第 1 天）</p>
-    <div class="lookup-row">
-      <span>第</span>
-      <input type="number" id="dayNumber" min="1" value="65">
-      <span>天</span>
+    <p class="label">天數、週數與日期雙向換算</p>
+    <div class="row lookup-grid">
+      <div class="field">
+        <label for="dayNumber">第幾天</label>
+        <input type="number" id="dayNumber" min="1" step="1" inputmode="numeric" value="65">
+      </div>
+      <div class="field">
+        <label for="weekNumber">第幾週</label>
+        <input type="number" id="weekNumber" min="1" step="1" inputmode="numeric">
+      </div>
+      <div class="field">
+        <label for="dayDate">對應日期</label>
+        <input type="date" id="dayDate" min="0001-01-01" max="9999-12-31">
+      </div>
     </div>
-    <div class="lookup-row">
-      <span>對應日期</span>
-      <input type="date" id="dayDate">
-    </div>
-    <p class="field-error" id="lookupError"></p>
+    <p class="hint">每 7 天為一週；輸入週數會帶入該週首日，輸入日期或天數會回填所屬週數。</p>
+    <p class="hint week-range" id="weekRangeOut" aria-live="polite">–</p>
+    <p class="field-error" id="lookupError" role="status"></p>
   </div>
 
   <hr>
@@ -221,69 +239,101 @@
 <script>
 const periodStart = document.getElementById('periodStart');
 const periodEnd = document.getElementById('periodEnd');
+const periodDays = document.getElementById('periodDays');
+const periodError = document.getElementById('periodError');
 const totalDaysOut = document.getElementById('totalDaysOut');
 const dayNumber = document.getElementById('dayNumber');
+const weekNumber = document.getElementById('weekNumber');
 const dayDate = document.getElementById('dayDate');
+const weekRangeOut = document.getElementById('weekRangeOut');
 const lookupError = document.getElementById('lookupError');
 const queryBlocks = document.getElementById('queryBlocks');
-
-const today = new Date();
-const iso = d => d.toISOString().slice(0,10);
-const t0 = new Date(today.getFullYear(), today.getMonth(), 1);
-periodStart.value = iso(t0);
-const t1 = new Date(today.getFullYear(), today.getMonth()+2, 0);
-periodEnd.value = iso(t1);
+const DAY_MS = 86400000;
+let lookupSource = 'day';
+let periodSource = 'duration';
 
 function parseDate(str) {
-  const [y,m,d] = str.split('-').map(Number);
-  return new Date(y, m-1, d);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) return null;
+  const [y, m, d] = str.split('-').map(Number);
+  if (y < 1 || y > 9999) return null;
+  const result = new Date(0);
+  result.setUTCHours(0, 0, 0, 0);
+  result.setUTCFullYear(y, m - 1, d);
+  return result.getUTCFullYear() === y && result.getUTCMonth() === m - 1 && result.getUTCDate() === d ? result : null;
 }
-function dayDiff(a, b) {
-  return Math.round((b - a) / 86400000);
+function iso(date) {
+  if (!date || !Number.isFinite(date.getTime())) return '';
+  const year = date.getUTCFullYear();
+  if (year < 1 || year > 9999) return '';
+  return `${String(year).padStart(4, '0')}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
 }
+function addDays(date, days) { return new Date(date.getTime() + days * DAY_MS); }
+function dayDiff(a, b) { return Math.round((b - a) / DAY_MS); }
 function weekOf(offsetDays) { return Math.floor(offsetDays / 7) + 1; }
 function biweekOf(offsetDays) { return Math.floor(offsetDays / 14) + 1; }
+function positiveInteger(value) {
+  const number = Number(value);
+  return value.trim() !== '' && Number.isSafeInteger(number) && number >= 1 ? number : null;
+}
+function showError(element, message = '') {
+  element.textContent = message;
+  element.style.display = message ? 'block' : 'none';
+}
+function getPeriod() {
+  const start = parseDate(periodStart.value);
+  const end = parseDate(periodEnd.value);
+  const days = positiveInteger(periodDays.value);
+  return start && end && days && dayDiff(start, end) + 1 === days ? { start, end, days, weeks: Math.ceil(days / 7) } : null;
+}
+
+// Date-only arithmetic uses UTC to avoid time-zone and daylight-saving shifts.
+const today = new Date();
+const localDateString = `${String(today.getFullYear()).padStart(4, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+const todayDate = parseDate(localDateString);
+const firstOfMonth = parseDate(`${localDateString.slice(0, 7)}-01`);
+const lastOfNextMonth = new Date(firstOfMonth);
+lastOfNextMonth.setUTCMonth(lastOfNextMonth.getUTCMonth() + 2, 0);
+periodStart.value = iso(firstOfMonth);
+periodDays.value = dayDiff(firstOfMonth, lastOfNextMonth) + 1;
+dayNumber.value = Math.min(65, Number(periodDays.value));
 
 const blockCount = 4;
 for (let i = 0; i < blockCount; i++) {
   const wrap = document.createElement('div');
   wrap.className = 'query-block';
-
-  const defaultStart = new Date(today);
-  defaultStart.setDate(today.getDate() + i * 7);
-  const defaultEnd = new Date(defaultStart);
-  defaultEnd.setDate(defaultStart.getDate() + 6);
-
+  wrap.dataset.startSource = 'date';
+  wrap.dataset.endSource = 'date';
+  const defaultStart = addDays(todayDate, i * 7);
+  const defaultEnd = addDays(defaultStart, 6);
   wrap.innerHTML = `
     <p class="block-label">查詢區間 ${i + 1}</p>
     <div class="row">
       <div class="field">
-        <label>起始日</label>
-        <input type="date" class="qStart">
+        <label for="qStart${i}">起始日</label>
+        <input type="date" class="qStart" id="qStart${i}" min="0001-01-01" max="9999-12-31">
       </div>
       <div class="field">
-        <label>結束日</label>
-        <input type="date" class="qEnd">
+        <label for="qEnd${i}">結束日</label>
+        <input type="date" class="qEnd" id="qEnd${i}" min="0001-01-01" max="9999-12-31">
       </div>
     </div>
-    <div class="error-box"></div>
-    <div class="metrics">
-      <div class="metric">
-        <p class="label">第幾週</p>
-        <p class="value weekOut">–</p>
+    <div class="row">
+      <div class="field">
+        <label for="qStartWeek${i}">起始週（第幾週）</label>
+        <input type="number" class="qStartWeek" id="qStartWeek${i}" min="1" step="1" inputmode="numeric">
       </div>
-      <div class="metric">
-        <p class="label">第幾雙週</p>
-        <p class="value biweekOut">–</p>
+      <div class="field">
+        <label for="qEndWeek${i}">結束週（第幾週）</label>
+        <input type="number" class="qEndWeek" id="qEndWeek${i}" min="1" step="1" inputmode="numeric">
       </div>
-      <div class="metric">
-        <p class="label">距工期開始</p>
-        <p class="value dayOut">–</p>
-      </div>
-      <div class="metric">
-        <p class="label">共幾天</p>
-        <p class="value spanOut">–</p>
-      </div>
+    </div>
+    <p class="hint">輸入週數會帶入該週首日／末日；修改日期會回填週數。最後一週以竣工日為止。</p>
+    <div class="error-box" role="status"></div>
+    <div class="metrics" aria-live="polite">
+      <div class="metric"><p class="label">第幾週</p><p class="value weekOut">–</p></div>
+      <div class="metric"><p class="label">第幾雙週</p><p class="value biweekOut">–</p></div>
+      <div class="metric"><p class="label">距工期開始</p><p class="value dayOut">–</p></div>
+      <div class="metric"><p class="label">共幾天</p><p class="value spanOut">–</p></div>
     </div>
   `;
   queryBlocks.appendChild(wrap);
@@ -291,101 +341,166 @@ for (let i = 0; i < blockCount; i++) {
   wrap.querySelector('.qEnd').value = iso(defaultEnd);
 }
 
-let lookupSource = null;
-
-function syncLookup(source) {
-  const ps = periodStart.value, pe = periodEnd.value;
-  const dPS = parseDate(ps), dPE = parseDate(pe);
-  const periodValid = ps && pe && dPE >= dPS;
-  lookupError.style.display = 'none';
-
-  if (!periodValid) return;
-
-  if (source === 'day') {
-    const n = parseInt(dayNumber.value, 10);
-    if (!n || n < 1) {
-      lookupError.textContent = '請輸入大於 0 的天數。';
-      lookupError.style.display = 'block';
-      return;
-    }
-    const targetDate = new Date(dPS);
-    targetDate.setDate(dPS.getDate() + (n - 1));
-    dayDate.value = iso(targetDate);
-  } else if (source === 'date') {
-    if (!dayDate.value) return;
-    const dTarget = parseDate(dayDate.value);
-    if (dTarget < dPS) {
-      lookupError.textContent = '日期不可早於工期開始日。';
-      lookupError.style.display = 'block';
-      return;
-    }
-    const offset = dayDiff(dPS, dTarget);
-    dayNumber.value = offset + 1;
-  }
-}
-
-function calcAll() {
-  const ps = periodStart.value, pe = periodEnd.value;
-  const dPS = parseDate(ps), dPE = parseDate(pe);
-  const periodValid = ps && pe && dPE >= dPS;
-
-  if (periodValid) {
-    const totalDays = dayDiff(dPS, dPE) + 1;
-    totalDaysOut.textContent = `共 ${totalDays} 天`;
+function syncPeriod(source) {
+  periodSource = source;
+  const start = parseDate(periodStart.value);
+  if (source === 'end') {
+    const end = parseDate(periodEnd.value);
+    periodDays.value = start && end && end >= start ? dayDiff(start, end) + 1 : '';
   } else {
-    totalDaysOut.textContent = '–';
+    const days = positiveInteger(periodDays.value);
+    periodEnd.value = start && days ? iso(addDays(start, days - 1)) : '';
   }
-
-  syncLookup(lookupSource || 'day');
-
-  document.querySelectorAll('.query-block').forEach((wrap) => {
-    const qs = wrap.querySelector('.qStart').value;
-    const qe = wrap.querySelector('.qEnd').value;
-    const errorBox = wrap.querySelector('.error-box');
-    const metrics = wrap.querySelector('.metrics');
-    errorBox.style.display = 'none';
-    metrics.style.display = 'none';
-
-    if (!periodValid) {
-      errorBox.textContent = '請先確認整體工期開始日與結束日正確。';
-      errorBox.style.display = 'block';
+  calcAll();
+}
+function clearLookupResult() {
+  if (lookupSource !== 'day') dayNumber.value = '';
+  if (lookupSource !== 'week') weekNumber.value = '';
+  if (lookupSource !== 'date') dayDate.value = '';
+  weekRangeOut.textContent = '–';
+}
+function syncLookup(period) {
+  showError(lookupError);
+  const start = parseDate(periodStart.value);
+  if (!start) {
+    clearLookupResult();
+    return;
+  }
+  let target;
+  if (lookupSource === 'date') {
+    target = parseDate(dayDate.value);
+    if (!target || target < start) {
+      clearLookupResult();
+      if (target) showError(lookupError, '日期不可早於開工日。');
       return;
     }
-    if (!qs || !qe) return;
-
-    const dQS = parseDate(qs), dQE = parseDate(qe);
-    if (dQE < dQS) {
-      errorBox.textContent = '結束日不可早於起始日。';
-      errorBox.style.display = 'block';
+  } else {
+    const input = lookupSource === 'week' ? weekNumber : dayNumber;
+    const n = positiveInteger(input.value);
+    if (!n) {
+      clearLookupResult();
+      if (input.value) showError(lookupError, `請輸入大於 0 的整數${lookupSource === 'week' ? '週數' : '天數'}。`);
       return;
     }
-    if (dQS < dPS || dQE > dPE) {
-      errorBox.textContent = '此區間超出整體工期範圍。';
-      errorBox.style.display = 'block';
+    target = addDays(start, lookupSource === 'week' ? (n - 1) * 7 : n - 1);
+    if (!iso(target)) {
+      clearLookupResult();
+      showError(lookupError, '換算結果超出可支援的日期範圍（西元 0001～9999 年）。');
       return;
     }
-
-    const offsetStart = dayDiff(dPS, dQS);
-    const offsetEnd = dayDiff(dPS, dQE);
-    const wStart = weekOf(offsetStart), wEnd = weekOf(offsetEnd);
-    const bStart = biweekOf(offsetStart), bEnd = biweekOf(offsetEnd);
-    const spanDays = offsetEnd - offsetStart + 1;
-
-    wrap.querySelector('.weekOut').textContent = wStart === wEnd ? `第 ${wStart} 週` : `第 ${wStart}–${wEnd} 週`;
-    wrap.querySelector('.biweekOut').textContent = bStart === bEnd ? `第 ${bStart} 雙週` : `第 ${bStart}–${bEnd} 雙週`;
-    wrap.querySelector('.dayOut').textContent = offsetStart === offsetEnd ? `第 ${offsetStart+1} 天` : `第 ${offsetStart+1}–${offsetEnd+1} 天`;
-    wrap.querySelector('.spanOut').textContent = `${spanDays} 天`;
-
-    metrics.style.display = 'grid';
-  });
+  }
+  const offset = dayDiff(start, target);
+  const week = weekOf(offset);
+  if (lookupSource !== 'day') dayNumber.value = offset + 1;
+  if (lookupSource !== 'week') weekNumber.value = week;
+  if (lookupSource !== 'date') dayDate.value = iso(target);
+  const first = addDays(start, (week - 1) * 7);
+  let last = addDays(first, 6);
+  if (period && first <= period.end && last > period.end) last = period.end;
+  weekRangeOut.textContent = `第 ${week} 週：${iso(first)} ～ ${iso(last) || '超出日期範圍'}`;
+  if (period && target > period.end) showError(lookupError, '此日期超出目前竣工日，仍依開工日起算天數與週數。');
+}
+function syncBoundary(wrap, boundary, period) {
+  const isStart = boundary === 'start';
+  const dateInput = wrap.querySelector(isStart ? '.qStart' : '.qEnd');
+  const weekInput = wrap.querySelector(isStart ? '.qStartWeek' : '.qEndWeek');
+  const fromWeek = wrap.dataset[`${boundary}Source`] === 'week';
+  if (!period) {
+    if (fromWeek) dateInput.value = '';
+    else weekInput.value = '';
+    weekInput.removeAttribute('max');
+    return;
+  }
+  weekInput.max = period.weeks;
+  if (fromWeek) {
+    const week = positiveInteger(weekInput.value);
+    if (!week || week > period.weeks) {
+      dateInput.value = '';
+      return;
+    }
+    let date = addDays(period.start, isStart ? (week - 1) * 7 : week * 7 - 1);
+    if (date > period.end) date = period.end;
+    dateInput.value = iso(date);
+  } else {
+    const date = parseDate(dateInput.value);
+    weekInput.value = date && date >= period.start ? weekOf(dayDiff(period.start, date)) : '';
+  }
+}
+function calcQuery(wrap, period) {
+  syncBoundary(wrap, 'start', period);
+  syncBoundary(wrap, 'end', period);
+  const errorBox = wrap.querySelector('.error-box');
+  const metrics = wrap.querySelector('.metrics');
+  showError(errorBox);
+  metrics.style.display = 'none';
+  wrap.querySelectorAll('.metric .value').forEach(element => { element.textContent = '–'; });
+  if (!period) {
+    showError(errorBox, '請先確認開工日與工期正確。');
+    return;
+  }
+  for (const boundary of ['start', 'end']) {
+    const input = wrap.querySelector(boundary === 'start' ? '.qStartWeek' : '.qEndWeek');
+    if (wrap.dataset[`${boundary}Source`] === 'week' && input.value) {
+      const week = positiveInteger(input.value);
+      if (!week || week > period.weeks) {
+        showError(errorBox, `請輸入第 1～${period.weeks} 週的整數週數。`);
+        return;
+      }
+    }
+  }
+  const start = parseDate(wrap.querySelector('.qStart').value);
+  const end = parseDate(wrap.querySelector('.qEnd').value);
+  if (!start || !end) return;
+  if (end < start) {
+    showError(errorBox, '結束日不可早於起始日。');
+    return;
+  }
+  if (start < period.start || end > period.end) {
+    showError(errorBox, '此區間超出整體工期範圍。');
+    return;
+  }
+  const offsetStart = dayDiff(period.start, start);
+  const offsetEnd = dayDiff(period.start, end);
+  const wStart = weekOf(offsetStart), wEnd = weekOf(offsetEnd);
+  const bStart = biweekOf(offsetStart), bEnd = biweekOf(offsetEnd);
+  wrap.querySelector('.weekOut').textContent = wStart === wEnd ? `第 ${wStart} 週` : `第 ${wStart}–${wEnd} 週`;
+  wrap.querySelector('.biweekOut').textContent = bStart === bEnd ? `第 ${bStart} 雙週` : `第 ${bStart}–${bEnd} 雙週`;
+  wrap.querySelector('.dayOut').textContent = offsetStart === offsetEnd ? `第 ${offsetStart + 1} 天` : `第 ${offsetStart + 1}–${offsetEnd + 1} 天`;
+  wrap.querySelector('.spanOut').textContent = `${offsetEnd - offsetStart + 1} 天`;
+  metrics.style.display = 'grid';
+}
+function calcAll() {
+  const period = getPeriod();
+  const start = parseDate(periodStart.value);
+  const end = parseDate(periodEnd.value);
+  showError(periodError);
+  totalDaysOut.textContent = period ? `共 ${period.days} 天（至第 ${period.weeks} 週）` : '–';
+  if (!period) {
+    if (!start) showError(periodError, '請輸入有效的開工日。');
+    else if (periodSource === 'end') showError(periodError, end && end < start ? '竣工日不可早於開工日。' : '請輸入有效的竣工日。');
+    else if (!positiveInteger(periodDays.value)) showError(periodError, '工期請輸入大於 0 的整數日曆天數。');
+    else showError(periodError, '工期超出可支援的日期範圍（西元 0001～9999 年）。');
+  }
+  syncLookup(period);
+  queryBlocks.querySelectorAll('.query-block').forEach(wrap => calcQuery(wrap, period));
 }
 
-periodStart.addEventListener('input', () => { calcAll(); });
-periodEnd.addEventListener('input', () => { calcAll(); });
+periodStart.addEventListener('input', () => syncPeriod('duration'));
+periodDays.addEventListener('input', () => syncPeriod('duration'));
+periodEnd.addEventListener('input', () => syncPeriod('end'));
 dayNumber.addEventListener('input', () => { lookupSource = 'day'; calcAll(); });
+weekNumber.addEventListener('input', () => { lookupSource = 'week'; calcAll(); });
 dayDate.addEventListener('input', () => { lookupSource = 'date'; calcAll(); });
-queryBlocks.addEventListener('input', calcAll);
-calcAll();
+queryBlocks.addEventListener('input', event => {
+  const wrap = event.target.closest('.query-block');
+  if (!wrap) return;
+  if (event.target.matches('.qStartWeek')) wrap.dataset.startSource = 'week';
+  if (event.target.matches('.qEndWeek')) wrap.dataset.endSource = 'week';
+  if (event.target.matches('.qStart')) wrap.dataset.startSource = 'date';
+  if (event.target.matches('.qEnd')) wrap.dataset.endSource = 'date';
+  calcAll();
+});
+syncPeriod('duration');
 </script>
 
 </body>
